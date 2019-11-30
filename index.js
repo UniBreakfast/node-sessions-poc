@@ -96,6 +96,8 @@
 
   dbAddSes = async ses => { db.sess.push(jsonClone(ses)) },
 
+  dbUpdSes = async (sid, datelast, tokens) => {}, ////////////
+
   dbGetSes = async sid => {
     const ses = db.sess.find(s => s.id==sid)
     return ses? jsonClone(ses) : null
@@ -116,23 +118,21 @@
   assign(global, {dbGetId, dbAddSes, dbGetSes, dbGetLast, dbGetOwn, dbDelSes})
 }
 
+const maxSess = 4, maxTokens = 4, sessions = []
+
+sessions.inshift = ses =>
+  sessions.length = Math.min(maxSess, sessions.unshift(ses))
+
 const
 
 rndStr = (i=4, f=()=>Math.random().toString(36).slice(2), s='') =>
   { for (;i;--i) s+=f(); return s },
 
-
-
-sessions = [],
-
-maxSess = 4, maxTokens = 4,
-
 startSes = userid => {
   const token = rndStr(), id = ++maxId, datestart = Date.now(),
         ses = {id, userid, datestart, datelast: datestart, tokens: [token]}
   dbAddSes(ses)
-  sessions.unshift(ses)
-  if (sessions.length>maxSess) sessions.length = maxSess
+  sessions.inshift(ses)
   return {sid: id, token}
 },
 
@@ -144,15 +144,9 @@ delSes = async sid => {
   return ~i || await dbDelSes(sid)? true : false
 },
 
-checkSes =(sid, token)=> {
+checkSes = async (sid, token)=> {
   let ses = sessions.find(s => s.id==sid)
-  if (!ses) {
-    ses = db.sess.find(s => s.id==sid)
-    if (ses) {
-      sessions.unshift(ses)
-      sessions.length = maxSess
-    }
-  }
+  if (!ses && (ses = await dbGetSes(sid))) sessions.inshift(ses)
   if (!ses || !ses.tokens.includes(token)) return false
   token = rndStr()
   const datelast = Date.now()
@@ -161,6 +155,7 @@ checkSes =(sid, token)=> {
   ses.tokens.unshift(token)
   ses.tokens.length = maxTokens
   sessions.unshift(ses)
+  //////////////////////////////////////////
   assign(db.sess.find(s => s.id==sid), {datelast, tokens: ses.tokens})
   return token
 },
