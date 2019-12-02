@@ -30,7 +30,7 @@
 
 { // mocking db with functions to work with it
   var db = {
-    users: [{id: 1, login: 'Alex', pass: 'jeronimo', timeout: 230e3},
+    users: [{id: 1, login: 'Alex', pass: 'jeronimo', timeout: 430e6},
             {id: 3, login: 'Alex', pass: 'jeronimo', timeout: 555},
             {id: 2, login: 'Brad', pass: 'box', timeout: 2e9}],
     sess: JSON.parse(`[
@@ -127,11 +127,11 @@
       .reduce((obj, u)=> ({...obj, [u.id]: u.timeout}), {})),
 
   dbClearSess = async ()=> {
-    const timeouts = await dbUserTimeouts()
+    const timeouts = await dbUserTimeouts(), timestamp = Date.now()
     db.sess.splice(0, db.sess.length, ...db.sess.filter(s => {
-      if (s.timeout) return Date.now()-s.timeout>s.datelast? false : true
+      if (s.timeout) return timestamp-s.timeout>s.datelast? false : true
       return (timeouts[s.userid] &&
-        Date.now()-timeouts[s.userid]>s.datelast)? false : true
+        timestamp-timeouts[s.userid]>s.datelast)? false : true
     }))
   },
 
@@ -140,7 +140,7 @@
   assign(global, {dbGetId, dbAddSes, dbGetSes, dbGetLast, dbGetOwn, dbDelSes, dbUserTimeouts, dbClearSess, dbSessUserTimeouts})
 }
 
-const maxSess = 4, maxTokens = 4, sessions = []
+const maxSess=4, maxTokens=4, checkInterval=30e3, userTimeouts={}, sessions=[]
 
 sessions.inshift = ses =>
   sessions.length = Math.min(maxSess, sessions.unshift(ses))
@@ -155,10 +155,29 @@ startSes = userid => {
         ses = {id, userid, datestart, datelast: datestart, tokens: [token]}
   dbAddSes(ses)
   sessions.inshift(ses)
+  if (!userTimeouts[userid])
+    dbUserTimeouts([userid]).then(timeout => assign(userTimeouts, timeout))
   return {sid: id, token}
 },
 
 loadSess = async ()=> {sessions.splice(0, maxSess,...await dbGetLast(maxSess))},
+
+initSess = async ()=> {
+  await dbClearSess()
+  await loadSess()
+  assign(userTimeouts, await dbSessUserTimeouts())
+},
+
+delOldSess = async ()=> {
+  c('cleanup')
+  const timestamp = Date.now()
+  sessions.splice(0, maxSess, ...sessions.filter(s => {
+    if (s.timeout) return timestamp-s.timeout>s.datelast? false : true
+    return (userTimeouts[s.userid] &&
+      timestamp-userTimeouts[s.userid]>s.datelast)? false : true
+  }))
+  await dbClearSess()
+},
 
 delSes = async sid => {
   const i = sessions.findIndex(s => s.id==sid)
@@ -171,7 +190,9 @@ checkSes = async (sid, token)=> {
   if (!ses && (ses = await dbGetSes(sid))) sessions.inshift(ses)
   if (!ses || !ses.tokens.includes(token)) return false
   const datelast = Date.now()
-  if (ses.timeout && datelast-ses.timeout>ses.datelast) return false
+  if (ses.timeout) { if (datelast-ses.timeout>ses.datelast) return false }
+  else if (userTimeouts[ses.userid] &&
+    datelast-userTimeouts[ses.userid]>ses.datelast) return false
   token = rndStr()
   ses = sessions.splice(sessions.findIndex(s => s.id==sid), 1)[0]
   ses.datelast = datelast
@@ -188,7 +209,7 @@ labelSes = async (sid, label)=> {
   if (!ses) return false
   ses.label = label
   return await dbUpdSes(ses) && true
-}
+},
 
 limitSes = async (sid, timeout)=> {
   let ses = sessions.find(s => s.id==sid)
@@ -197,12 +218,17 @@ limitSes = async (sid, timeout)=> {
   if (timeout) ses.timeout = timeout
   else delete ses.timeout
   return await dbUpdSes(ses) && true
+},
+
+limitUser = async (userid, timeout)=> {
+  timeout? userTimeouts[userid] = timeout : delete userTimeouts[userid]
+  await dbSetUserTimeout(userid, timeout)
 }
 
-var maxId = dbGetId()
+let maxId
 
-loadSess()
+initSess().then(dbGetId).then(id => maxId = id)
 
-setInterval(t, 1e6)
+setInterval(delOldSess, checkInterval)
 
-assign(global, {c, startSes, delSes, checkSes, labelSes, limitSes, sessions})
+assign(global, {c, startSes, delSes, checkSes, labelSes, limitSes, delOldSess, limitUser, sessions, userTimeouts})
